@@ -248,7 +248,17 @@ def main():
     else:
         print("MLflow tracking: Local (./mlruns)")
     
-    mlflow.set_experiment(f"prompt-quality-{model_name}")
+    # Set experiment (creates if doesn't exist, reuses if exists)
+    experiment_name = f"prompt-quality-{model_name}"
+    experiment = mlflow.get_experiment_by_name(experiment_name)
+    if experiment is None:
+        experiment_id = mlflow.create_experiment(experiment_name)
+        print(f"Created new experiment: {experiment_name}")
+    else:
+        experiment_id = experiment.experiment_id
+        print(f"Using existing experiment: {experiment_name} (ID: {experiment_id})")
+    
+    mlflow.set_experiment(experiment_name)
     
     with mlflow.start_run(run_name=f"{model_name}-run"):
         params = {
