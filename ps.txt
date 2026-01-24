@@ -1,0 +1,103 @@
+[01:30, 25/01/2026] Ayush Patel Ds1: Overview
+[IMPORTANT] Register at https://unstop.com/hackathons/ml-challenge-udhgam-20-woxsen-university-hyderabad-1622450 to participate in the challenge
+
+Modern LLMs live or die by the quality of the prompt they’re given. Clear, specific, well-scoped prompts tend to produce better answers; vague or contradictory prompts tend to produce… vibes.
+
+In this competition, your job is to predict a continuous “prompt quality” score from obfuscated token sequences. You will not receive raw text. You’ll get only:
+
+input_ids (scrambled token IDs)
+attention_mask
+a target label for training rows
+Your model must learn the patterns that correlate with high-quality prompts—structure, constraints, formatting, and other signals that survive tokenization.
+
+Start
+
+8 hours ago
+Close
+10 days to go
+Description
+The task
+This is a supervised regression problem.
+
+Input: a sequence of integer token IDs (input_ids) and an attention_mask
+Output: a single float prediction label_pred in [0, 1]
+The dataset is derived from a real prompt corpus, then tokenized and obfuscated:
+
+Token IDs have been scrambled via a fixed secret permutation, so they’re consistent across the dataset but not decodable into text.
+The tokenizer and the permutation key are not provided.
+That means:
+
+You can train sequence models, CNNs over tokens, Transformers-from-scratch, pooling + MLP, even clever feature engineering (length, entropy, repetition, punctuation-ish patterns inferred from tokens, etc.).
+You cannot rely on pretrained language model token embeddings tied to known vocabularies, because the IDs are deliberately not interpretable.
+What’s allowed
+Training only on the provided competition files.
+Any modeling approach that maps input_ids → predicted score.
+What’s not allowed
+Attempting to recover or deanonymize the original prompts (reverse-engineering the obfuscation / mapping).
+Using outside copies of the underlying source text or labels, if you believe you’ve identified them.
+Sharing private test labels, leakage exploits, or anything that undermines the integrity of the leaderboard.
+(Yes, this is the boring part. Competitions need boring parts so the fun parts can exist.)
+
+Evaluation
+Submissions are evaluated using MAE (Mean Absolute Error) on a hidden test set.
+
+Lower is better.
+
+Submission format
+Upload a CSV with exactly these columns:
+
+example_id (must match the test file)
+label (your predicted float)
+Example:
+
+example_id,label
+te_0000000,0.734
+te_0000001,0.112
+te_0000002,0.503
+Predictions should be valid floats; we recommend clipping to [0, 1] before submission.
+
+Leaderboard split
+The public leaderboard reflects performance on a public subset of the hidden test set. Final rankings are determined by performance on the private holdout portion.
+
+Prizes
+Total Prizes Available: ₹15,000
+
+1st Place - ₹7,500
+2nd Place - ₹5,000
+3rd Place - ₹2,500
+All the participants will receive a participation certificate and winners will receive additional winner's certificates
+
+Research write-up - Winners (and other top teams) will be invited to contribute a short technical note describing their approach. We plan to compile these into a consolidated write-up with clear attribution to contributors; we may submit it to a suitable venue if the result is strong enough. Submission of the technical note is mandatory
+
+Citation
+Ryyan Mathew Hasan and SajayR. Udhgam 2.0 ML Challenge. https://kaggle.com/competitions/ml-challenge-udhgam-2, 2026. Kaggle.
+[01:30, 25/01/2026] Ayush Patel Ds1: Dataset Description
+Files
+You are provided with:
+
+train.jsonl — training examples with labels
+test.jsonl — test examples without labels
+sample_submission.csv — submission template
+Data format
+Each line in train.jsonl / test.jsonl is a JSON object.
+
+Fields
+example_id (string) Unique identifier for the row. Use this when producing your submission.
+
+input_ids (list[int]) Sequence of token IDs. These IDs are obfuscated and do not map to any published vocabulary.
+
+attention_mask (list[int]) Same length as input_ids. Typically 1 for real tokens and 0 for padding (if any).
+
+label (float, train only) Target quality score in [0, 1].
+
+Examples
+train.jsonl line:
+
+{"example_id":"tr_0000000","input_ids":[101,4021,17,88],"attention_mask":[1,1,1,1],"label":0.742}
+test.jsonl line:
+
+{"example_id":"te_0000000","input_ids":[101,99,5012],"attention_mask":[1,1,1]}
+What you need to submit
+Use sample_submission.csv as your guide. Your upload should be a CSV containing predictions for every example_id in test.jsonl.
+
+The winners will be contacted separately for the open-sourced codebase and the technical report
