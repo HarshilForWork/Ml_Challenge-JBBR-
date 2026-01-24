@@ -7,19 +7,46 @@ data:
   train_file_csv: "train.csv"
   test_file_csv: "test.csv"
   
-# Model Configuration
-model:
-  max_seq_length: 512
-  embedding_dim: 128
-  hidden_dim: 256
-  num_layers: 2
-  dropout: 0.3
-  
-# Training Configuration
+# Model Configurations
+models:
+  lstm:
+    hidden_dim: 256
+    num_layers: 2
+    dropout: 0.3
+    batch_size: 32
+    learning_rate: 0.001
+    num_epochs: 50
+    top_features: 15  # Number of top features to use (from feature_correlations.csv)
+    
+  cnn:
+    hidden_dim: 128
+    dropout: 0.3
+    batch_size: 64
+    learning_rate: 0.0005
+    num_epochs: 50
+    top_features: 15
+    
+  hybrid:
+    hidden_dim: 256
+    num_layers: 2
+    dropout: 0.4
+    batch_size: 32
+    learning_rate: 0.0008
+    num_epochs: 50
+    top_features: 15
+    
+  transformer:
+    hidden_dim: 256
+    num_layers: 3
+    num_heads: 8
+    dropout: 0.3
+    batch_size: 32
+    learning_rate: 0.0005
+    num_epochs: 50
+    top_features: 15
+
+# Training Configuration (shared)
 training:
-  batch_size: 32
-  learning_rate: 0.001
-  num_epochs: 50
   validation_split: 0.2
   early_stopping_patience: 10
   seed: 42

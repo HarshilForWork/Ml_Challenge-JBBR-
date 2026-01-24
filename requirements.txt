@@ -2,7 +2,10 @@
 pandas
 numpy
 scikit-learn
+--extra-index-url https://download.pytorch.org/whl/cu124
 torch
+torchvision
+torchaudio
 
 # MLOps tools
 mlflow
@@ -11,6 +14,10 @@ boto3
 
 # Data processing
 jsonlines
+tqdm
+matplotlib
+seaborn
+
 # Utils
 python-dotenv
 pyyaml

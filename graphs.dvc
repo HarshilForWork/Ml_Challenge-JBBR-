@@ -1,0 +1,6 @@
+outs:
+- md5: 76ac66562256565a2aa16634aa826a2e.dir
+  size: 296300
+  nfiles: 1
+  hash: md5
+  path: graphs

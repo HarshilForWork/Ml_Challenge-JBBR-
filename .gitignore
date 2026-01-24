@@ -30,3 +30,5 @@ models/
 
 # OS
 .DS_Store
+/graphs
+/models

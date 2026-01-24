@@ -206,6 +206,8 @@ class FeatureEngineer:
                 item['attention_mask']
             )
             features['example_id'] = item['example_id']
+            features['input_ids'] = str(item['input_ids'])  # Keep original input_ids
+            features['attention_mask'] = str(item['attention_mask'])  # Keep attention_mask
             if 'label' in item:
                 features['label'] = item['label']
             
@@ -213,9 +215,9 @@ class FeatureEngineer:
         
         df = pd.DataFrame(features_list)
         
-        # Store feature names (excluding example_id and label)
+        # Store feature names (excluding example_id, input_ids, attention_mask, and label)
         self.feature_names = [col for col in df.columns 
-                             if col not in ['example_id', 'label']]
+                             if col not in ['example_id', 'input_ids', 'attention_mask', 'label']]
         
         return df
 
@@ -226,10 +228,14 @@ def analyze_features(df: pd.DataFrame, label_col: str = 'label'):
         print("No labels available for analysis")
         return
     
-    feature_cols = [col for col in df.columns if col not in ['example_id', label_col]]
+    feature_cols = [col for col in df.columns if col not in ['example_id', 'input_ids', 'attention_mask', label_col]]
+    
+    # Remove constant features (std = 0) to avoid warnings
+    non_constant = df[feature_cols].std() > 0
+    valid_features = df[feature_cols].columns[non_constant].tolist()
     
     # Calculate correlations with target
-    correlations = df[feature_cols].corrwith(df[label_col]).abs().sort_values(ascending=False)
+    correlations = df[valid_features].corrwith(df[label_col]).abs().sort_values(ascending=False)
     
     print("\n" + "="*60)
     print("Top 10 Features by Correlation with Label")
