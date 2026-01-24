@@ -1,2 +1,32 @@
-#s3 bucket keys
+# Python
+__pycache__/
+*.py[cod]
+.Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Environment variables
+.env
 aws_iam_key.json
+
+# MLflow
+mlruns/
+mlartifacts/
+
+# Model outputs
+models/
+*.pth
+
+# Data (tracked by DVC)
+/Raw_data
+/input_data
+
+# DVC
+.dvc/cache
+.dvc/tmp
+
+# OS
+.DS_Store

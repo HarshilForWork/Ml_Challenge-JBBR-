@@ -1,0 +1,34 @@
+# Data Configuration
+data:
+  raw_dir: "Raw_data"
+  input_dir: "input_data"
+  train_file: "train.jsonl"
+  test_file: "test.jsonl"
+  train_file_csv: "train.csv"
+  test_file_csv: "test.csv"
+  
+# Model Configuration
+model:
+  max_seq_length: 512
+  embedding_dim: 128
+  hidden_dim: 256
+  num_layers: 2
+  dropout: 0.3
+  
+# Training Configuration
+training:
+  batch_size: 32
+  learning_rate: 0.001
+  num_epochs: 50
+  validation_split: 0.2
+  early_stopping_patience: 10
+  seed: 42
+  
+# MLflow Configuration
+mlflow:
+  experiment_name: "prompt-quality-prediction"
+  run_name_prefix: "run"
+  
+# DVC Configuration
+dvc:
+  remote_name: "s3storage"

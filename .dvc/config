@@ -1,0 +1,4 @@
+[core]
+    remote = s3storage
+['remote "s3storage"']
+    url = s3://ml-challenge-jbbr/dvc-storage
