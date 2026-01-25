@@ -323,7 +323,7 @@ def main():
         params = {
             'model': model_name,
             'vocab_size': vocab_size,
-            'embedding_dim': model_config['embedding_dim'],
+            'embed_dim': model_config['embed_dim'],
             'max_seq_length': model_config['max_seq_length'],
             'hidden_dim': model_config['hidden_dim'],
             'num_layers': model_config['num_layers'],
@@ -337,10 +337,10 @@ def main():
             'use_scheduler': train_config.get('use_scheduler', False)
         }
         mlflow.log_params(params)
-        
+
         model = LSTMModel(
             vocab_size=vocab_size,
-            embedding_dim=model_config['embedding_dim'],
+            embedding_dim=model_config['embed_dim'],
             hidden_dim=model_config['hidden_dim'],
             num_layers=model_config['num_layers'],
             dropout=model_config['dropout'],

@@ -9,16 +9,33 @@ data:
   
 # Model Configurations
 models:
-  lstm:
-    vocab_size: 50368  # Maximum token ID + 1 (actual max is 50367)
-    embedding_dim: 128
-    max_seq_length: 512
-    hidden_dim: 192
+  lstm_ae:
+    vocab_size: 50368
+    embed_dim: 64
+    hidden_dim: 128
     num_layers: 2
     dropout: 0.3
     batch_size: 64
-    learning_rate: 0.0001
+    learning_rate: 0.001
     num_epochs: 100
+    max_seq_length: 512
+    top_features: 30
+    ae_input_type: "features"  # or "features+embeddings"
+    ae_latent_dim: 96
+    ae_compression_mode: "expand"  # auto | compress | expand
+    ae_epochs: 30
+    ae_lr: 0.001
+    save_ae_graph: true
+  lstm:
+    vocab_size: 50368  # Maximum token ID + 1 (actual max is 50367)
+    embed_dim: 64
+    hidden_dim: 128
+    num_layers: 2
+    dropout: 0.3
+    batch_size: 64
+    learning_rate: 0.001
+    num_epochs: 100
+    max_seq_length: 512
     top_features: 30  # 0 = raw tokens only, >0 = raw tokens + top N engineered features
     
   cnn:
@@ -49,7 +66,8 @@ models:
     num_epochs: 100
     top_features: 40
     ae_input_type: "features"  # or "features+embeddings"
-    ae_latent_dim: 64
+    ae_latent_dim: 20
+    ae_compression_mode: "compress"  # auto | compress | expand
     ae_epochs: 30
     ae_lr: 0.001
    
