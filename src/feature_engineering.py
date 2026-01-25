@@ -197,7 +197,7 @@ class FeatureEngineer:
         }
     
     def process_dataset(self, data: List[Dict]) -> pd.DataFrame:
-        """Process entire dataset and return feature DataFrame"""
+        """Process entire dataset and return feature DataFrame, including original input_ids and attention_mask as strings"""
         features_list = []
         
         for item in data:
@@ -206,8 +206,9 @@ class FeatureEngineer:
                 item['attention_mask']
             )
             features['example_id'] = item['example_id']
-            features['input_ids'] = str(item['input_ids'])  # Keep original input_ids
-            features['attention_mask'] = str(item['attention_mask'])  # Keep attention_mask
+            # Store original input_ids and attention_mask as strings for reproducibility
+            features['input_ids'] = str(item['input_ids'])
+            features['attention_mask'] = str(item['attention_mask'])
             if 'label' in item:
                 features['label'] = item['label']
             
@@ -215,9 +216,9 @@ class FeatureEngineer:
         
         df = pd.DataFrame(features_list)
         
-        # Store feature names (excluding example_id, input_ids, attention_mask, and label)
+        # Store feature names (excluding example_id, label, input_ids, attention_mask)
         self.feature_names = [col for col in df.columns 
-                             if col not in ['example_id', 'input_ids', 'attention_mask', 'label']]
+                             if col not in ['example_id', 'label', 'input_ids', 'attention_mask']]
         
         return df
 
@@ -228,7 +229,7 @@ def analyze_features(df: pd.DataFrame, label_col: str = 'label'):
         print("No labels available for analysis")
         return
     
-    feature_cols = [col for col in df.columns if col not in ['example_id', 'input_ids', 'attention_mask', label_col]]
+    feature_cols = [col for col in df.columns if col not in ['example_id', label_col, 'input_ids', 'attention_mask']]
     
     # Remove constant features (std = 0) to avoid warnings
     non_constant = df[feature_cols].std() > 0

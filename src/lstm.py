@@ -24,39 +24,56 @@ load_dotenv()
 
 
 class FeatureDataset(Dataset):
-    """Dataset for engineered features"""
-    def __init__(self, features, labels=None):
-        self.features = torch.FloatTensor(features)
+    """Dataset for token sequences and optional engineered features"""
+    def __init__(self, input_ids, features=None, labels=None):
+        self.input_ids = torch.LongTensor(input_ids)
+        self.features = torch.FloatTensor(features) if features is not None else None
         self.labels = torch.FloatTensor(labels) if labels is not None else None
     
     def __len__(self):
-        return len(self.features)
+        return len(self.input_ids)
     
     def __getitem__(self, idx):
         if self.labels is not None:
-            return self.features[idx], self.labels[idx]
-        return self.features[idx]
+            if self.features is not None:
+                return self.input_ids[idx], self.features[idx], self.labels[idx]
+            return self.input_ids[idx], self.labels[idx]
+        if self.features is not None:
+            return self.input_ids[idx], self.features[idx]
+        return self.input_ids[idx]
 
 
 class LSTMModel(nn.Module):
-    """LSTM model for regression"""
-    def __init__(self, input_dim, hidden_dim, num_layers, dropout):
+    """LSTM model for regression with optional feature concatenation"""
+    def __init__(self, vocab_size, embedding_dim, hidden_dim, num_layers, dropout, num_features=0):
         super(LSTMModel, self).__init__()
+        self.embedding = nn.Embedding(vocab_size, embedding_dim, padding_idx=0)
         self.lstm = nn.LSTM(
-            input_dim, hidden_dim, num_layers,
+            embedding_dim, hidden_dim, num_layers,
             batch_first=True, dropout=dropout if num_layers > 1 else 0,
             bidirectional=True
         )
         self.dropout = nn.Dropout(dropout)
-        self.fc1 = nn.Linear(hidden_dim * 2, hidden_dim)
+        
+        # Concatenate LSTM output with engineered features if present
+        fc_input_dim = hidden_dim * 2 + num_features
+        self.fc1 = nn.Linear(fc_input_dim, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, 1)
         self.relu = nn.ReLU()
         self.sigmoid = nn.Sigmoid()
+        self.num_features = num_features
     
-    def forward(self, x):
-        x = x.unsqueeze(1)
+    def forward(self, input_ids, features=None):
+        # Clip token IDs to valid range [0, vocab_size-1]
+        input_ids = torch.clamp(input_ids, 0, self.embedding.num_embeddings - 1)
+        x = self.embedding(input_ids)
         lstm_out, _ = self.lstm(x)
-        x = lstm_out[:, -1, :]
+        x = lstm_out[:, -1, :]  # Take last hidden state
+        
+        # Concatenate with engineered features if provided
+        if self.num_features > 0 and features is not None:
+            x = torch.cat([x, features], dim=1)
+        
         x = self.dropout(x)
         x = self.relu(self.fc1(x))
         x = self.dropout(x)
@@ -105,12 +122,23 @@ def train_epoch(model, dataloader, criterion, optimizer, device):
     total_loss = 0
     predictions, targets = [], []
     
-    for batch_features, batch_labels in tqdm(dataloader, desc="Training"):
-        batch_features = batch_features.to(device)
-        batch_labels = batch_labels.to(device)
+    for batch_data in tqdm(dataloader, desc="Training"):
+        if len(batch_data) == 3:  # input_ids, features, labels
+            batch_ids, batch_features, batch_labels = batch_data
+            batch_ids = batch_ids.to(device)
+            batch_features = batch_features.to(device)
+            batch_labels = batch_labels.to(device)
+            
+            optimizer.zero_grad()
+            outputs = model(batch_ids, batch_features)
+        else:  # input_ids, labels (no features)
+            batch_ids, batch_labels = batch_data
+            batch_ids = batch_ids.to(device)
+            batch_labels = batch_labels.to(device)
+            
+            optimizer.zero_grad()
+            outputs = model(batch_ids)
         
-        optimizer.zero_grad()
-        outputs = model(batch_features)
         loss = criterion(outputs, batch_labels)
         loss.backward()
         optimizer.step()
@@ -129,11 +157,19 @@ def validate(model, dataloader, criterion, device):
     predictions, targets = [], []
     
     with torch.no_grad():
-        for batch_features, batch_labels in tqdm(dataloader, desc="Validation"):
-            batch_features = batch_features.to(device)
-            batch_labels = batch_labels.to(device)
+        for batch_data in tqdm(dataloader, desc="Validation"):
+            if len(batch_data) == 3:  # input_ids, features, labels
+                batch_ids, batch_features, batch_labels = batch_data
+                batch_ids = batch_ids.to(device)
+                batch_features = batch_features.to(device)
+                batch_labels = batch_labels.to(device)
+                outputs = model(batch_ids, batch_features)
+            else:  # input_ids, labels (no features)
+                batch_ids, batch_labels = batch_data
+                batch_ids = batch_ids.to(device)
+                batch_labels = batch_labels.to(device)
+                outputs = model(batch_ids)
             
-            outputs = model(batch_features)
             loss = criterion(outputs, batch_labels)
             
             total_loss += loss.item()
@@ -149,9 +185,19 @@ def predict(model, dataloader, device):
     predictions = []
     
     with torch.no_grad():
-        for batch_features in tqdm(dataloader, desc="Predicting"):
-            batch_features = batch_features.to(device)
-            outputs = model(batch_features)
+        for batch_data in tqdm(dataloader, desc="Predicting"):
+            if isinstance(batch_data, (tuple, list)) and len(batch_data) == 2:
+                batch_ids, batch_features = batch_data
+                batch_ids = batch_ids.to(device)
+                batch_features = batch_features.to(device)
+                outputs = model(batch_ids, batch_features)
+            else:
+                if isinstance(batch_data, (tuple, list)):
+                    batch_ids = batch_data[0].to(device)
+                else:
+                    batch_ids = batch_data.to(device)
+                outputs = model(batch_ids)
+            
             predictions.extend(outputs.cpu().numpy())
     
     return np.array(predictions)
@@ -176,38 +222,76 @@ def main():
     train_df = pd.read_csv("data/processed/train_features.csv")
     test_df = pd.read_csv("data/processed/test_features.csv")
     
-    # Load feature correlations and select top features
-    corr_df = pd.read_csv("data/processed/feature_correlations.csv", index_col=0)
-    top_n = model_config.get('top_features', 30)
-    top_features = corr_df.nlargest(top_n, 'correlation').index.tolist()
+    # Parse input_ids from string
+    import ast
+    train_input_ids = [ast.literal_eval(ids) if isinstance(ids, str) else ids for ids in train_df['input_ids']]
+    test_input_ids = [ast.literal_eval(ids) if isinstance(ids, str) else ids for ids in test_df['input_ids']]
     
-    print(f"Using top {len(top_features)} features based on correlation")
-    print(f"Top 5 features: {top_features[:5]}")
+    # Pad sequences to max_seq_length
+    max_len = model_config['max_seq_length']
+    train_input_ids = [ids[:max_len] + [0]*(max_len-len(ids[:max_len])) for ids in train_input_ids]
+    test_input_ids = [ids[:max_len] + [0]*(max_len-len(ids[:max_len])) for ids in test_input_ids]
     
-    # Filter to only include top features that exist in the data
-    available_features = [f for f in top_features if f in train_df.columns]
-    feature_cols = available_features
-    
-    X = train_df[feature_cols].values
     y = train_df['label'].values
-    X_test = test_df[feature_cols].values
     test_ids = test_df['example_id'].values
     
-    X_train, X_val, y_train, y_val = train_test_split(
-        X, y, test_size=train_config['validation_split'],
-        random_state=train_config['seed']
-    )
+    # Load engineered features if top_features > 0
+    top_n = model_config.get('top_features', 0)
+    X_features = None
+    X_test_features = None
+    num_features = 0
     
-    scaler = StandardScaler()
-    X_train = scaler.fit_transform(X_train)
-    X_val = scaler.transform(X_val)
-    X_test = scaler.transform(X_test)
+    if top_n > 0:
+        corr_df = pd.read_csv("data/processed/feature_correlations.csv", index_col=0)
+        top_features = corr_df.nlargest(top_n, 'correlation').index.tolist()
+        available_features = [f for f in top_features if f in train_df.columns]
+        
+        if available_features:
+            print(f"Using top {len(available_features)} engineered features")
+            print(f"Top 5 features: {available_features[:5]}")
+            X_features = train_df[available_features].values
+            X_test_features = test_df[available_features].values
+            num_features = len(available_features)
+        else:
+            print("No valid engineered features found, using raw tokens only")
+    else:
+        print("Using raw input_ids only (no engineered features)")
     
-    print(f"Train: {X_train.shape}, Val: {X_val.shape}, Test: {X_test.shape}")
+    # Train/val split
+    if X_features is not None:
+        X_train_ids, X_val_ids, X_train_feat, X_val_feat, y_train, y_val = train_test_split(
+            train_input_ids, X_features, y,
+            test_size=train_config['validation_split'],
+            random_state=train_config['seed']
+        )
+    else:
+        X_train_ids, X_val_ids, y_train, y_val = train_test_split(
+            train_input_ids, y,
+            test_size=train_config['validation_split'],
+            random_state=train_config['seed']
+        )
+        X_train_feat = X_val_feat = None
     
-    train_dataset = FeatureDataset(X_train, y_train)
-    val_dataset = FeatureDataset(X_val, y_val)
-    test_dataset = FeatureDataset(X_test)
+    # Standardize engineered features if present
+    scaler = None
+    if X_train_feat is not None:
+        scaler = StandardScaler()
+        X_train_feat = scaler.fit_transform(X_train_feat)
+        X_val_feat = scaler.transform(X_val_feat)
+        X_test_features = scaler.transform(X_test_features)
+    
+    print(f"Train sequences: {len(X_train_ids)}, Val sequences: {len(X_val_ids)}, Test sequences: {len(test_input_ids)}")
+    if num_features > 0:
+        print(f"Feature dimensions: {num_features}")
+    
+    # Auto-detect vocab_size from training data only
+    max_token_id = int(max(max(seq) for seq in X_train_ids))
+    vocab_size = max_token_id + 1
+    print(f"Auto-detected vocab_size: {vocab_size} (max training token ID: {max_token_id})")
+    
+    train_dataset = FeatureDataset(X_train_ids, X_train_feat, y_train)
+    val_dataset = FeatureDataset(X_val_ids, X_val_feat, y_val)
+    test_dataset = FeatureDataset(test_input_ids, X_test_features)
     
     train_loader = DataLoader(train_dataset, batch_size=model_config['batch_size'], shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=model_config['batch_size'])
@@ -238,22 +322,27 @@ def main():
     with mlflow.start_run(run_name=f"{model_name}-run"):
         params = {
             'model': model_name,
-            'input_dim': X_train.shape[1],
+            'vocab_size': vocab_size,
+            'embedding_dim': model_config['embedding_dim'],
+            'max_seq_length': model_config['max_seq_length'],
             'hidden_dim': model_config['hidden_dim'],
             'num_layers': model_config['num_layers'],
             'dropout': model_config['dropout'],
             'batch_size': model_config['batch_size'],
             'learning_rate': model_config['learning_rate'],
             'num_epochs': model_config['num_epochs'],
-            'top_features': len(feature_cols)
+            'num_features': num_features,
+            'top_features': top_n
         }
         mlflow.log_params(params)
         
         model = LSTMModel(
-            input_dim=X_train.shape[1],
+            vocab_size=vocab_size,
+            embedding_dim=model_config['embedding_dim'],
             hidden_dim=model_config['hidden_dim'],
             num_layers=model_config['num_layers'],
-            dropout=model_config['dropout']
+            dropout=model_config['dropout'],
+            num_features=num_features
         ).to(device)
         
         print(f"\nModel Parameters: {sum(p.numel() for p in model.parameters()):,}")
