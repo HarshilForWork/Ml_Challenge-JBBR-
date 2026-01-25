@@ -393,6 +393,10 @@ def main():
                 'val_mae': val_mae
             }, step=epoch)
             
+            # Update learning rate scheduler if enabled
+            if scheduler is not None:
+                scheduler.step(val_mae)
+            
             if val_mae < best_val_mae:
                 best_val_mae = val_mae
                 patience_counter = 0

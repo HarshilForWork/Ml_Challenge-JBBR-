@@ -351,7 +351,9 @@ def main():
             'learning_rate': model_config['learning_rate'],
             'num_epochs': model_config['num_epochs'],
             'num_features': num_features,
-            'top_features': top_n
+            'top_features': top_n,
+            'loss_function': train_config.get('loss_function', 'MSELoss'),
+            'use_scheduler': train_config.get('use_scheduler', False)
         }
         mlflow.log_params(params)
         
@@ -366,8 +368,23 @@ def main():
         
         print(f"\nModel Parameters: {sum(p.numel() for p in model.parameters()):,}")
         
-        criterion = nn.MSELoss()
+        # Use configurable loss function
+        loss_fn = train_config.get('loss_function', 'MSELoss')
+        criterion = nn.L1Loss() if loss_fn == 'L1Loss' else nn.MSELoss()
+        print(f"Loss function: {loss_fn}")
+        
         optimizer = torch.optim.Adam(model.parameters(), lr=model_config['learning_rate'])
+        
+        # Add learning rate scheduler if enabled
+        scheduler = None
+        if train_config.get('use_scheduler', False):
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer, mode='min',
+                factor=train_config.get('scheduler_factor', 0.5),
+                patience=train_config.get('scheduler_patience', 5),
+                verbose=True
+            )
+            print(f"Using {train_config.get('scheduler_type', 'ReduceLROnPlateau')} scheduler")
         
         best_val_mae = float('inf')
         patience_counter = 0
@@ -397,6 +414,10 @@ def main():
                 'val_loss': val_loss,
                 'val_mae': val_mae
             }, step=epoch)
+            
+            # Update learning rate scheduler if enabled
+            if scheduler is not None:
+                scheduler.step(val_mae)
             
             if val_mae < best_val_mae:
                 best_val_mae = val_mae

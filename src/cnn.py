@@ -45,39 +45,29 @@ class FeatureDataset(Dataset):
 
 class CNNModel(nn.Module):
     """1D CNN model for regression with optional feature concatenation"""
-    def __init__(self, vocab_size, embedding_dim, hidden_dim, dropout, num_features=0):
+    def __init__(self, vocab_size, embedding_dim, num_filters=64, kernel_sizes=[3, 4, 5], dropout=0.3, num_features=0):
         super(CNNModel, self).__init__()
         self.embedding = nn.Embedding(vocab_size, embedding_dim, padding_idx=0)
         
-        self.conv_layers = nn.Sequential(
-            nn.Conv1d(embedding_dim, hidden_dim, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.BatchNorm1d(hidden_dim),
-            nn.Dropout(dropout),
-            
-            nn.Conv1d(hidden_dim, hidden_dim * 2, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.BatchNorm1d(hidden_dim * 2),
-            nn.Dropout(dropout),
-            
-            nn.Conv1d(hidden_dim * 2, hidden_dim * 4, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.BatchNorm1d(hidden_dim * 4),
-            nn.Dropout(dropout)
-        )
+        # Multiple 1D convolution layers with different kernel sizes
+        self.convolutions = nn.ModuleList([
+            nn.Conv1d(embedding_dim, num_filters, kernel_size=k, padding=k//2)
+            for k in kernel_sizes
+        ])
         
-        self.global_avg_pool = nn.AdaptiveAvgPool1d(1)
-        self.global_max_pool = nn.AdaptiveMaxPool1d(1)
+        self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(dropout)
         
-        fc_input_dim = hidden_dim * 4 * 2 + num_features
+        # Concatenate all conv outputs + features
+        fc_input_dim = num_filters * len(kernel_sizes) + num_features
         self.fc = nn.Sequential(
-            nn.Linear(fc_input_dim, hidden_dim * 2),
+            nn.Linear(fc_input_dim, 128),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.Linear(128, 64),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden_dim, 1),
+            nn.Linear(64, 1),
             nn.Sigmoid()
         )
         self.num_features = num_features
@@ -85,14 +75,25 @@ class CNNModel(nn.Module):
     def forward(self, input_ids, features=None):
         # Clip token IDs to valid range [0, vocab_size-1]
         input_ids = torch.clamp(input_ids, 0, self.embedding.num_embeddings - 1)
-        x = self.embedding(input_ids)
-        x = x.transpose(1, 2)  # (batch, embedding_dim, seq_len)
-        x = self.conv_layers(x)
+        embedded = self.embedding(input_ids)
+        embedded = self.dropout(embedded)
         
-        avg_pool = self.global_avg_pool(x).squeeze(-1)
-        max_pool = self.global_max_pool(x).squeeze(-1)
-        x = torch.cat([avg_pool, max_pool], dim=1)
+        # Transpose for Conv1d: (batch, seq_len, embed_dim) -> (batch, embed_dim, seq_len)
+        embedded = embedded.transpose(1, 2)
         
+        # Apply convolutions and global max pooling
+        conv_outputs = []
+        for conv in self.convolutions:
+            conv_output = self.relu(conv(embedded))
+            # Global max pooling: (batch, num_filters, seq_len) -> (batch, num_filters)
+            pooled = torch.max(conv_output, dim=2)[0]
+            conv_outputs.append(pooled)
+        
+        # Concatenate all pooled outputs
+        x = torch.cat(conv_outputs, dim=1)
+        x = self.dropout(x)
+        
+        # Concatenate with engineered features if provided
         if self.num_features > 0 and features is not None:
             x = torch.cat([x, features], dim=1)
         
@@ -342,28 +343,47 @@ def main():
             'vocab_size': vocab_size,
             'embedding_dim': model_config['embedding_dim'],
             'max_seq_length': model_config['max_seq_length'],
-            'hidden_dim': model_config['hidden_dim'],
+            'num_filters': model_config.get('num_filters', 64),
+            'kernel_sizes': str(model_config.get('kernel_sizes', [3, 4, 5])),
             'dropout': model_config['dropout'],
             'batch_size': model_config['batch_size'],
             'learning_rate': model_config['learning_rate'],
             'num_epochs': model_config['num_epochs'],
             'num_features': num_features,
-            'top_features': top_n
+            'top_features': top_n,
+            'loss_function': train_config.get('loss_function', 'MSELoss'),
+            'use_scheduler': train_config.get('use_scheduler', False)
         }
         mlflow.log_params(params)
         
         model = CNNModel(
             vocab_size=vocab_size,
             embedding_dim=model_config['embedding_dim'],
-            hidden_dim=model_config['hidden_dim'],
+            num_filters=model_config.get('num_filters', 64),
+            kernel_sizes=model_config.get('kernel_sizes', [3, 4, 5]),
             dropout=model_config['dropout'],
             num_features=num_features
         ).to(device)
         
         print(f"\nModel Parameters: {sum(p.numel() for p in model.parameters()):,}")
         
-        criterion = nn.MSELoss()
+        # Use configurable loss function
+        loss_fn = train_config.get('loss_function', 'MSELoss')
+        criterion = nn.L1Loss() if loss_fn == 'L1Loss' else nn.MSELoss()
+        print(f"Loss function: {loss_fn}")
+        
         optimizer = torch.optim.Adam(model.parameters(), lr=model_config['learning_rate'])
+        
+        # Add learning rate scheduler if enabled
+        scheduler = None
+        if train_config.get('use_scheduler', False):
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer, mode='min',
+                factor=train_config.get('scheduler_factor', 0.5),
+                patience=train_config.get('scheduler_patience', 5),
+                verbose=True
+            )
+            print(f"Using {train_config.get('scheduler_type', 'ReduceLROnPlateau')} scheduler")
         
         best_val_mae = float('inf')
         patience_counter = 0
@@ -393,6 +413,10 @@ def main():
                 'val_loss': val_loss,
                 'val_mae': val_mae
             }, step=epoch)
+            
+            # Update learning rate scheduler if enabled
+            if scheduler is not None:
+                scheduler.step(val_mae)
             
             if val_mae < best_val_mae:
                 best_val_mae = val_mae

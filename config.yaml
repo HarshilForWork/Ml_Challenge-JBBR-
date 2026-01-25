@@ -27,11 +27,32 @@ models:
     max_seq_length: 512
     hidden_dim: 192
     num_layers: 2
+    num_filters: 64
+    kernel_sizes: [3, 4, 5]
     dropout: 0.3
     batch_size: 64
     learning_rate: 0.0005
     num_epochs: 100
     top_features: 40
+    
+  cnn_ae:
+    vocab_size: 50368
+    embedding_dim: 128
+    max_seq_length: 512
+    hidden_dim: 192
+    num_layers: 2
+    num_filters: 64
+    kernel_sizes: [3, 4, 5]
+    dropout: 0.3
+    batch_size: 64
+    learning_rate: 0.0005
+    num_epochs: 100
+    top_features: 40
+    ae_input_type: "features"  # or "features+embeddings"
+    ae_latent_dim: 64
+    ae_epochs: 30
+    ae_lr: 0.001
+   
     
   hybrid:
     vocab_size: 50368
@@ -63,6 +84,11 @@ training:
   validation_split: 0.15
   early_stopping_patience: 12
   seed: 42
+  loss_function: "L1Loss"  # L1Loss for MAE metric, MSELoss for MSE metric
+  use_scheduler: true
+  scheduler_type: "ReduceLROnPlateau"
+  scheduler_factor: 0.5
+  scheduler_patience: 5
   
 # MLflow Configuration
 mlflow:
