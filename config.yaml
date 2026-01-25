@@ -11,34 +11,35 @@ data:
 models:
   lstm:
     vocab_size: 50368  # Maximum token ID + 1 (actual max is 50367)
-    embedding_dim: 256
+    embedding_dim: 128
     max_seq_length: 512
-    hidden_dim: 512
-    num_layers: 3
-    dropout: 0.5
+    hidden_dim: 192
+    num_layers: 2
+    dropout: 0.3
     batch_size: 64
-    learning_rate: 0.0005
+    learning_rate: 0.0001
     num_epochs: 100
     top_features: 30  # 0 = raw tokens only, >0 = raw tokens + top N engineered features
     
   cnn:
     vocab_size: 50368
-    embedding_dim: 256
+    embedding_dim: 128
     max_seq_length: 512
-    hidden_dim: 256
-    dropout: 0.5
-    batch_size: 128
-    learning_rate: 0.0003
+    hidden_dim: 192
+    num_layers: 2
+    dropout: 0.3
+    batch_size: 64
+    learning_rate: 0.0005
     num_epochs: 100
     top_features: 40
     
   hybrid:
     vocab_size: 50368
-    embedding_dim: 256
+    embedding_dim: 128
     max_seq_length: 512
-    hidden_dim: 512
+    hidden_dim: 192
     num_layers: 3
-    dropout: 0.5
+    dropout: 0.3
     batch_size: 64
     learning_rate: 0.0004
     num_epochs: 100
