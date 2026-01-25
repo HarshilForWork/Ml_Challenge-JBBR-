@@ -196,6 +196,13 @@ def main():
         train_latent = ae.encode(torch.FloatTensor(X_train_feat).to(device)).cpu().numpy()
         val_latent = ae.encode(torch.FloatTensor(X_val_feat).to(device)).cpu().numpy()
         test_latent = ae.encode(torch.FloatTensor(X_test_features).to(device)).cpu().numpy()
+    # Print AE input/output/latent dimensions and a sample of latent features
+    print(f"\nAE input dim: {ae.encoder[0].in_features}")
+    print(f"AE latent dim: {ae.encoder[-2].out_features}")
+    print(f"AE output dim: {ae.decoder[-1].out_features}")
+    print(f"Latent feature array shape: {train_latent.shape}")
+    print("Sample AE latent features (first 3 samples, first 8 dims):")
+    print(np.round(train_latent[:3, :8], 4))
     # If ae_input_type == 'features', prepare latent for concat to each token embedding
     if ae_input_type == 'features':
         # For each sample, repeat latent vector for each token (seq_len)
