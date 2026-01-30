@@ -77,18 +77,18 @@ models:
     hidden_dim: 96
     num_layers: 2
     num_filters: 48   
-    kernel_sizes: [3, 4, 5, 6]
+    kernel_sizes: [3, 4, 5, 6, 7]
     dropout: 0.3
     batch_size: 128
     learning_rate: 0.0003
-    num_epochs: 100
+    num_epochs: 75
     top_features: 26
     use_attention_mask: false
-    use_self_attention: false
+    use_self_attention: true
     self_attention_heads: 1
     self_attention_dropout: 0.1
     use_attention_pooling: false
-    use_adamw: false
+    use_adamw: true
     weight_decay: 0.01
     use_linear_output: false
     ae_input_type: "features"
