@@ -2,11 +2,28 @@
 data:
   raw_dir: "Raw_data"
   input_dir: "input_data"
-  train_file: "train.jsonl"
-  test_file: "test.jsonl"
-  train_file_csv: "train.csv"
-  test_file_csv: "test.csv"
+  processed_dir: "data/processed"
+  output_dir: "data/output"
+  train_features: "data/processed/train_features.csv"
+  test_features: "data/processed/test_features.csv"
+
+# Training Configuration
+training:
+  validation_split: 0.2
+  seed: 42
+  loss_function: "L1Loss"
+  use_scheduler: false
+  early_stopping_patience: 10
   
+# MLflow Configuration
+mlflow:
+  experiment_name: "transformer-regressor"
+  tracking_uri: null  # Will use .env MLFLOW_TRACKING_URI
+  
+# DVC Configuration
+dvc:
+  remote_name: "s3storage"
+
 # Model Configurations
 models:
   lstm_ae:
@@ -20,14 +37,15 @@ models:
     num_epochs: 100
     max_seq_length: 512
     top_features: 30
-    ae_input_type: "features"  # or "features+embeddings"
+    ae_input_type: "features"
     ae_latent_dim: 96
-    ae_compression_mode: "expand"  # auto | compress | expand
+    ae_compression_mode: "expand"
     ae_epochs: 30
     ae_lr: 0.001
     save_ae_graph: true
+    
   lstm:
-    vocab_size: 50368  # Maximum token ID + 1 (actual max is 50367)
+    vocab_size: 50368
     embed_dim: 64
     hidden_dim: 128
     num_layers: 2
@@ -36,7 +54,7 @@ models:
     learning_rate: 0.001
     num_epochs: 100
     max_seq_length: 512
-    top_features: 30  # 0 = raw tokens only, >0 = raw tokens + top N engineered features
+    top_features: 30
     
   cnn:
     vocab_size: 50368
@@ -56,21 +74,50 @@ models:
     vocab_size: 50368
     embedding_dim: 128
     max_seq_length: 512
-    hidden_dim: 192
+    hidden_dim: 96
     num_layers: 2
-    num_filters: 64
-    kernel_sizes: [3, 4, 5]
+    num_filters: 48   
+    kernel_sizes: [3, 4, 5, 6]
     dropout: 0.3
-    batch_size: 64
-    learning_rate: 0.0005
+    batch_size: 128
+    learning_rate: 0.0003
     num_epochs: 100
-    top_features: 40
-    ae_input_type: "features"  # or "features+embeddings"
-    ae_latent_dim: 20
-    ae_compression_mode: "compress"  # auto | compress | expand
+    top_features: 26
+    use_attention_mask: false
+    use_self_attention: false
+    self_attention_heads: 1
+    self_attention_dropout: 0.1
+    use_attention_pooling: false
+    use_adamw: false
+    weight_decay: 0.01
+    use_linear_output: false
+    ae_input_type: "features"
+    ae_latent_dim: 14
+    ae_compression_mode: "compress"
     ae_epochs: 30
     ae_lr: 0.001
-   
+    prevent_overfitting: true
+    ae_early_stopping: true
+    ae_early_stopping_patience: 8
+    ae_train_val_split: true
+    ae_train_val_ratio: 0.8
+    enforce_weight_decay: true
+    min_weight_decay: 0.0001
+    clamp_outputs_during_training: true
+    scaler_fit_train_only: true
+    
+    # Data Augmentation
+    use_data_augmentation: true
+    augmentation:
+      token_dropout: true
+      token_dropout_prob: 0.1
+      token_replacement: true
+      token_replacement_prob: 0.05
+      feature_noise: true
+      feature_noise_std: 0.01
+      mixup: false
+      mixup_alpha: 0.2
+      augmentation_prob: 0.5  # Probability of applying augmentation to each sample
     
   hybrid:
     vocab_size: 50368
@@ -97,22 +144,49 @@ models:
     num_epochs: 100
     top_features: 40
     
-# Training Configuration (shared)
-training:
-  validation_split: 0.15
-  early_stopping_patience: 12
-  seed: 42
-  loss_function: "L1Loss"  # L1Loss for MAE metric, MSELoss for MSE metric
-  use_scheduler: true
-  scheduler_type: "ReduceLROnPlateau"
+  gru:
+    vocab_size: 50368
+    embedding_dim: 128
+    max_seq_length: 512
+    hidden_dim: 192
+    num_layers: 2
+    dropout: 0.3
+    batch_size: 64
+    learning_rate: 0.001
+    num_epochs: 100
+    top_features: 40
+    use_packed_sequence: true
+
+# Transformer Regressor Configuration (Direct regression, not embeddings)
+transformer_regressor:
+  # Model architecture - Match transformer.py
+  vocab_size: 50368
+  embedding_dim: 128  # From transformer.py
+  hidden_dim: 256     # From transformer.py  
+  num_layers: 2       # From transformer.py
+  num_heads: 4       # From transformer.py
+  max_seq_length: 512 # From transformer.py
+  dropout: 0.3        # From transformer.py
+
+  # Training parameters
+  batch_size: 64
+  learning_rate: 0.0002  # From transformer.py
+  weight_decay: 0.01
+  optimizer: "adam"  # From transformer.py
+
+  num_epochs: 30     # From transformer.py
+  early_stopping_patience: 7  # From transformer.py
+
+  # Scheduler parameters
   scheduler_factor: 0.5
-  scheduler_patience: 5
+  scheduler_patience: 3
+
+  # Feature fusion
+  use_engineered_features: true
+  num_features: 26    # Match actual available features
   
-# MLflow Configuration
-mlflow:
-  experiment_name: "prompt-quality-prediction"
-  run_name_prefix: "run"
-  
-# DVC Configuration
-dvc:
-  remote_name: "s3storage"
+  # Overfitting prevention
+  label_smoothing: 0.0  # Disable for now
+  gradient_clipping: true
+  max_grad_norm: 1.0
+  mixup_alpha: 0.0  # Disable for now

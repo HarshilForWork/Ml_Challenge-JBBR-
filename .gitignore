@@ -32,3 +32,4 @@ models/
 .DS_Store
 /graphs
 /models
+/catboost_info
