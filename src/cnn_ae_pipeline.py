@@ -19,7 +19,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, KFold
 from sklearn.preprocessing import StandardScaler
 from pathlib import Path
 import mlflow
@@ -123,14 +123,17 @@ class CNNWithLatentDataset(Dataset):
         return input_ids, mask, latent_features
 
 class FeatureAutoencoder(nn.Module):
-    def __init__(self, input_dim, hidden_dim, latent_dim, dropout=0.3):
+    def __init__(self, input_dim, hidden_dim, latent_dim, dropout=0.3, activation='gelu'):
         super().__init__()
+        # Select activation function
+        act_fn = {'relu': nn.ReLU(), 'gelu': nn.GELU(), 'silu': nn.SiLU(), 'tanh': nn.Tanh()}.get(activation.lower(), nn.GELU())
         self.encoder = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim), nn.ReLU(), nn.Dropout(dropout),
-            nn.Linear(hidden_dim, latent_dim), nn.ReLU()
+            nn.Linear(input_dim, hidden_dim), act_fn, nn.Dropout(dropout),
+            nn.Linear(hidden_dim, latent_dim), act_fn
         )
+        act_fn2 = {'relu': nn.ReLU(), 'gelu': nn.GELU(), 'silu': nn.SiLU(), 'tanh': nn.Tanh()}.get(activation.lower(), nn.GELU())
         self.decoder = nn.Sequential(
-            nn.Linear(latent_dim, hidden_dim), nn.ReLU(), nn.Dropout(dropout),
+            nn.Linear(latent_dim, hidden_dim), act_fn2, nn.Dropout(dropout),
             nn.Linear(hidden_dim, input_dim)
         )
     def forward(self, x):
@@ -172,7 +175,7 @@ class AttentionPooling(nn.Module):
         return pooled
 
 class CNNModel(nn.Module):
-    def __init__(self, vocab_size, embedding_dim, num_filters=64, kernel_sizes=[3,4,5], dropout=0.3, latent_dim=32, use_attention_mask=True, use_self_attention=False, self_attention_heads=1, self_attention_dropout=0.1, use_attention_pooling=False, use_linear_output=True):
+    def __init__(self, vocab_size, embedding_dim, num_filters=64, kernel_sizes=[3,4,5], dropout=0.3, latent_dim=32, use_attention_mask=True, use_self_attention=False, self_attention_heads=1, self_attention_dropout=0.1, use_attention_pooling=False, use_linear_output=True, activation='silu', fc_architecture='wide'):
         super().__init__()
         self.embedding = nn.Embedding(vocab_size, embedding_dim, padding_idx=0)
         self.latent_dim = latent_dim
@@ -181,6 +184,8 @@ class CNNModel(nn.Module):
         self.use_self_attention = use_self_attention
         self.use_attention_pooling = use_attention_pooling
         self.use_linear_output = use_linear_output
+        # Select activation function
+        self.act_fn = {'relu': nn.ReLU(), 'gelu': nn.GELU(), 'silu': nn.SiLU(), 'tanh': nn.Tanh()}.get(activation.lower(), nn.SiLU())
         if use_self_attention:
             self.self_attention = SelfAttention(embedding_dim + latent_dim, num_heads=self_attention_heads, dropout=self_attention_dropout)
         else:
@@ -196,22 +201,37 @@ class CNNModel(nn.Module):
             ])
         else:
             self.attention_pools = None
-        self.relu = nn.ReLU()
         self.dropout = nn.Dropout(dropout)
         fc_input_dim = num_filters * len(kernel_sizes)
-        # Conditional final activation: linear or sigmoid
+        # FC Architecture presets
+        if fc_architecture == 'original':
+            fc_dims = [128, 64]
+        elif fc_architecture == 'extra_wide':
+            fc_dims = [512, 256, 128]
+        elif fc_architecture == 'custom':
+            fc_dims = [324, 192, 96]
+        else:  # 'wide' (default)
+            fc_dims = [256, 128, 64]
+        
+        # Build FC layers dynamically
+        fc_layers = []
+        prev_dim = fc_input_dim
+        
+        for i, dim in enumerate(fc_dims):
+            act_fn = {'relu': nn.ReLU(), 'gelu': nn.GELU(), 'silu': nn.SiLU(), 'tanh': nn.Tanh()}.get(activation.lower(), nn.SiLU())
+            fc_layers.append(nn.Linear(prev_dim, dim))
+            fc_layers.append(act_fn)
+            fc_layers.append(nn.Dropout(dropout))
+            prev_dim = dim
+        
+        # Output layer
         if use_linear_output:
-            self.fc = nn.Sequential(
-                nn.Linear(fc_input_dim, 128), nn.ReLU(), nn.Dropout(dropout),
-                nn.Linear(128, 64), nn.ReLU(), nn.Dropout(dropout),
-                nn.Linear(64, 1)
-            )
+            fc_layers.append(nn.Linear(prev_dim, 1))
         else:
-            self.fc = nn.Sequential(
-                nn.Linear(fc_input_dim, 128), nn.ReLU(), nn.Dropout(dropout),
-                nn.Linear(128, 64), nn.ReLU(), nn.Dropout(dropout),
-                nn.Linear(64, 1), nn.Sigmoid()
-            )
+            fc_layers.append(nn.Linear(prev_dim, 1))
+            fc_layers.append(nn.Sigmoid())
+        
+        self.fc = nn.Sequential(*fc_layers)
     def forward(self, input_ids, attention_mask, latent_features):
         input_ids = torch.clamp(input_ids, 0, self.embedding.num_embeddings - 1)
         embedded = self.embedding(input_ids)  # (batch, seq_len, emb_dim)
@@ -229,7 +249,7 @@ class CNNModel(nn.Module):
             # ALWAYS pass attention_mask to self-attention to prevent attending to padding
             x = self.self_attention(x, attention_mask)
         x = x.transpose(1, 2)  # (batch, channels, seq_len)
-        conv_outputs = [self.relu(conv(x)) for conv in self.convolutions]
+        conv_outputs = [self.act_fn(conv(x)) for conv in self.convolutions]
         # Pooling: attention pooling or max pooling
         if self.use_attention_pooling and self.attention_pools is not None:
             # Transpose back for attention pooling: (batch, seq_len, channels)
@@ -354,6 +374,9 @@ def main():
     use_adamw = cnn_cfg.get('use_adamw', True)
     weight_decay = cnn_cfg.get('weight_decay', 0.0)
     use_linear_output = cnn_cfg.get('use_linear_output', True)
+    ae_activation = cnn_cfg.get('ae_activation', 'gelu')
+    cnn_activation = cnn_cfg.get('cnn_activation', 'silu')
+    fc_architecture = cnn_cfg.get('fc_architecture', 'wide')
     # Data loading
     train_df = pd.read_csv("data/processed/train_features.csv")
     test_df = pd.read_csv("data/processed/test_features.csv")
@@ -470,7 +493,8 @@ def main():
     print(f"Embedding dim: {cnn_cfg['embedding_dim']}, Total: {cnn_cfg['embedding_dim'] + ae_latent}")
     print(f"Self-attention heads: {cnn_cfg.get('self_attention_heads', 1)}")
     print(f"Divisibility check: {(cnn_cfg['embedding_dim'] + ae_latent) % cnn_cfg.get('self_attention_heads', 1) == 0}")
-    ae = FeatureAutoencoder(input_dim=X_train_feat.shape[1], hidden_dim=ae_hidden, latent_dim=ae_latent, dropout=ae_dropout)
+    print(f"AE activation: {ae_activation}, CNN activation: {cnn_activation}")
+    ae = FeatureAutoencoder(input_dim=X_train_feat.shape[1], hidden_dim=ae_hidden, latent_dim=ae_latent, dropout=ae_dropout, activation=ae_activation)
     ae_train_loader = DataLoader(FeatureOnlyDataset(ae_train_feat), batch_size=64, shuffle=True)
     ae_val_loader = DataLoader(FeatureOnlyDataset(ae_val_feat), batch_size=64, shuffle=False)
     ae = train_autoencoder(ae, ae_train_loader, ae_val_loader, ae_epochs, ae_lr, device, 
@@ -486,6 +510,12 @@ def main():
         print("⚠️  WARNING: NaN detected in train_latent features!")
     if np.isnan(val_latent).any():
         print("⚠️  WARNING: NaN detected in val_latent features!")
+    
+    # Save autoencoder model
+    ae_save_path = Path("models") / "feature_autoencoder.pth"
+    torch.save(ae.state_dict(), ae_save_path)
+    print(f"✓ Autoencoder saved: {ae_save_path}")
+    
     # Print AE input/output/latent dimensions and a sample of latent features
     print(f"\nAE input dim: {ae.encoder[0].in_features}")
     print(f"AE latent dim: {ae.encoder[-2].out_features}")
@@ -496,8 +526,12 @@ def main():
     # Note: latent features stay 2D (batch, latent_dim) - model expands them dynamically
     # CNN config
     max_token_id = int(max(max(seq) for seq in X_train_ids))
-    vocab_size = max_token_id + 1
-    
+    vocab_size = max_token_id + 1    
+    # K-Fold configuration
+    use_kfold = cnn_cfg.get('use_kfold', False)
+    kfold_splits = cnn_cfg.get('kfold_splits', 5)
+    kfold_ensemble_mode = cnn_cfg.get('kfold_ensemble_mode', 'best')  # 'best' or 'average'
+    kfold_weighted_ensemble = cnn_cfg.get('kfold_weighted_ensemble', False)  # weighted average based on val MAE    
     # Initialize data augmentation
     augmentation = None
     if use_data_augmentation:
@@ -506,6 +540,17 @@ def main():
     if enforce_weight_decay and weight_decay <= 0:
         weight_decay = min_weight_decay
         print(f"⚠️  weight_decay was {cnn_cfg.get('weight_decay', 0.0)} - enforcing minimum {weight_decay}")
+    
+    # Prepare for K-Fold or standard training
+    if use_kfold:
+        print(f"\n{'='*60}")
+        print(f"K-FOLD CROSS VALIDATION ENABLED")
+        print(f"  Number of folds: {kfold_splits}")
+        print(f"  Ensemble mode: {kfold_ensemble_mode}")
+        if kfold_ensemble_mode == 'average':
+            ensemble_type = "Weighted Average (by val MAE)" if kfold_weighted_ensemble else "Simple Average (mean)"
+            print(f"  Ensemble type: {ensemble_type}")
+        print(f"{'='*60}\n")
     
     cnn = CNNModel(
         vocab_size=vocab_size,
@@ -519,14 +564,12 @@ def main():
         self_attention_heads=self_attention_heads,
         self_attention_dropout=self_attention_dropout,
         use_attention_pooling=use_attention_pooling,
-        use_linear_output=use_linear_output
+        use_linear_output=use_linear_output,
+        activation=cnn_activation,
+        fc_architecture=fc_architecture
     ).to(device)
     # Datasets
-    train_dataset = CNNWithLatentDataset(X_train_ids, X_train_mask, train_latent, y_train, use_attention=use_attention_mask, use_self_attention=use_self_attention, augmentation=augmentation, is_train=True)
-    val_dataset = CNNWithLatentDataset(X_val_ids, X_val_mask, val_latent, y_val, use_attention=use_attention_mask, use_self_attention=use_self_attention, augmentation=None, is_train=False)
     test_dataset = CNNWithLatentDataset(test_input_ids, test_attention_mask, test_latent, use_attention=use_attention_mask, use_self_attention=use_self_attention, augmentation=None, is_train=False)
-    train_loader = DataLoader(train_dataset, batch_size=cnn_cfg['batch_size'], shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=cnn_cfg['batch_size'])
     test_loader = DataLoader(test_dataset, batch_size=cnn_cfg['batch_size'])
     # MLflow setup
     experiment_name = f"prompt-quality-{model_name}"
@@ -562,6 +605,9 @@ def main():
             'optimizer': 'AdamW' if use_adamw else 'Adam',
             'use_linear_output': use_linear_output,
             'output_activation': 'linear+clip' if use_linear_output else 'sigmoid',
+            'ae_activation': ae_activation,
+            'cnn_activation': cnn_activation,
+            'fc_architecture': fc_architecture,
             'use_data_augmentation': use_data_augmentation,
             'token_dropout': augmentation_config.get('token_dropout', False) if use_data_augmentation else False,
             'token_dropout_prob': augmentation_config.get('token_dropout_prob', 0.0),
@@ -571,119 +617,382 @@ def main():
             'feature_noise_std': augmentation_config.get('feature_noise_std', 0.0),
             'mixup': use_mixup,
             'mixup_alpha': mixup_alpha if use_mixup else 0.0,
-            'augmentation_prob': augmentation_config.get('augmentation_prob', 0.0)
+            'augmentation_prob': augmentation_config.get('augmentation_prob', 0.0),
+            'use_kfold': use_kfold,
+            'kfold_splits': kfold_splits if use_kfold else 0,
+            'kfold_ensemble_mode': kfold_ensemble_mode if use_kfold else 'N/A',
+            'kfold_weighted_ensemble': kfold_weighted_ensemble if (use_kfold and kfold_ensemble_mode == 'average') else False
         }
         mlflow.log_params(params)
-        # Loss, optimizer, scheduler
+        # Loss function
         loss_fn = train_cfg.get('loss_function', 'MSELoss')
         criterion = nn.L1Loss() if loss_fn == 'L1Loss' else nn.MSELoss()
         print(f"Loss function: {loss_fn}")
-        if use_adamw:
-            print(f"Optimizer: AdamW (weight_decay={weight_decay})")
-            optimizer = torch.optim.AdamW(cnn.parameters(), lr=cnn_cfg['learning_rate'], weight_decay=weight_decay)
-        else:
-            print(f"Optimizer: Adam")
-            optimizer = torch.optim.Adam(cnn.parameters(), lr=cnn_cfg['learning_rate'])
-        scheduler = None
-        if train_cfg.get('use_scheduler', False):
-            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-                optimizer, mode='min',
-                factor=train_cfg.get('scheduler_factor', 0.5),
-                patience=train_cfg.get('scheduler_patience', 5),
-                verbose=True
-            )
-        best_val_mae = float('inf')
-        patience_counter = 0
-        for epoch in range(cnn_cfg['num_epochs']):
-            cnn.train()
-            total_loss = 0
-            preds, targets = [], []
-            for batch_ids, batch_mask, batch_latent, batch_labels in tqdm(train_loader, desc=f"Train {epoch+1}"):
-                batch_ids = batch_ids.to(device)
-                batch_mask = batch_mask.to(device)
-                batch_latent = batch_latent.to(device)
-                batch_labels = batch_labels.to(device)
+        
+        # K-Fold Training or Standard Training
+        if use_kfold:
+            # K-FOLD CROSS VALIDATION
+            kfold = KFold(n_splits=kfold_splits, shuffle=True, random_state=train_cfg['seed'])
+            fold_val_maes = []
+            fold_models = []
+            
+            # Combine train and val data for k-fold splitting
+            all_train_ids = X_train_ids + X_val_ids
+            all_train_mask = X_train_mask + X_val_mask
+            all_train_latent = np.vstack([train_latent, val_latent])
+            all_train_labels = np.concatenate([y_train, y_val])
+            
+            for fold, (train_idx, val_idx) in enumerate(kfold.split(all_train_ids)):
+                print(f"\n{'='*60}")
+                print(f"FOLD {fold + 1}/{kfold_splits}")
+                print(f"{'='*60}")
                 
-                # Apply mixup augmentation if enabled
-                if use_mixup and use_data_augmentation:
-                    batch_ids, batch_mask, batch_latent, batch_labels = apply_mixup(
-                        batch_ids, batch_mask, batch_latent, batch_labels, alpha=mixup_alpha
+                # Split data for this fold
+                fold_train_ids = [all_train_ids[i] for i in train_idx]
+                fold_val_ids = [all_train_ids[i] for i in val_idx]
+                fold_train_mask = [all_train_mask[i] for i in train_idx]
+                fold_val_mask = [all_train_mask[i] for i in val_idx]
+                fold_train_latent = all_train_latent[train_idx]
+                fold_val_latent = all_train_latent[val_idx]
+                fold_train_labels = all_train_labels[train_idx]
+                fold_val_labels = all_train_labels[val_idx]
+                
+                # Create datasets for this fold
+                fold_train_dataset = CNNWithLatentDataset(fold_train_ids, fold_train_mask, fold_train_latent, fold_train_labels, 
+                                                          use_attention=use_attention_mask, use_self_attention=use_self_attention, 
+                                                          augmentation=augmentation, is_train=True)
+                fold_val_dataset = CNNWithLatentDataset(fold_val_ids, fold_val_mask, fold_val_latent, fold_val_labels, 
+                                                        use_attention=use_attention_mask, use_self_attention=use_self_attention, 
+                                                        augmentation=None, is_train=False)
+                fold_train_loader = DataLoader(fold_train_dataset, batch_size=cnn_cfg['batch_size'], shuffle=True)
+                fold_val_loader = DataLoader(fold_val_dataset, batch_size=cnn_cfg['batch_size'])
+                
+                # Initialize model for this fold
+                fold_cnn = CNNModel(
+                    vocab_size=vocab_size,
+                    embedding_dim=cnn_cfg['embedding_dim'],
+                    num_filters=cnn_cfg.get('num_filters', 64),
+                    kernel_sizes=cnn_cfg.get('kernel_sizes', [3,4,5]),
+                    dropout=cnn_cfg['dropout'],
+                    latent_dim=ae_latent,
+                    use_attention_mask=use_attention_mask,
+                    use_self_attention=use_self_attention,
+                    self_attention_heads=self_attention_heads,
+                    self_attention_dropout=self_attention_dropout,
+                    use_attention_pooling=use_attention_pooling,
+                    use_linear_output=use_linear_output,
+                    activation=cnn_activation,
+                    fc_architecture=fc_architecture
+                ).to(device)
+                
+                if use_adamw:
+                    fold_optimizer = torch.optim.AdamW(fold_cnn.parameters(), lr=cnn_cfg['learning_rate'], weight_decay=weight_decay)
+                else:
+                    fold_optimizer = torch.optim.Adam(fold_cnn.parameters(), lr=cnn_cfg['learning_rate'])
+                
+                fold_scheduler = None
+                if train_cfg.get('use_scheduler', False):
+                    fold_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                        fold_optimizer, mode='min',
+                        factor=train_cfg.get('scheduler_factor', 0.5),
+                        patience=train_cfg.get('scheduler_patience', 5),
+                        verbose=True
                     )
                 
-                optimizer.zero_grad()
-                outputs = cnn(batch_ids, batch_mask, batch_latent)
-                # Clamp outputs to [0,1] during training if enabled and using linear output
-                if clamp_outputs_during_training and use_linear_output:
-                    outputs = torch.clamp(outputs, 0, 1)
-                # Check for NaN in outputs
-                if torch.isnan(outputs).any():
-                    print(f"⚠️  NaN in outputs! Batch stats:")
-                    print(f"  - batch_latent has NaN: {torch.isnan(batch_latent).any()}")
-                    print(f"  - batch_ids range: [{batch_ids.min()}, {batch_ids.max()}]")
-                    raise ValueError("NaN detected in model outputs")
-                loss = criterion(outputs, batch_labels)
-                if torch.isnan(loss):
-                    print(f"⚠️  NaN in loss! outputs range: [{outputs.min()}, {outputs.max()}]")
-                    raise ValueError("NaN detected in loss")
-                loss.backward()
-                # Gradient clipping to prevent NaN
-                torch.nn.utils.clip_grad_norm_(cnn.parameters(), max_norm=1.0)
-                optimizer.step()
-                total_loss += loss.item()
-                preds.extend(outputs.detach().cpu().numpy())
-                targets.extend(batch_labels.cpu().numpy())
-            train_mae = np.mean(np.abs(np.array(preds) - np.array(targets)))
-            cnn.eval()
-            val_loss, val_mae = 0, 0
-            vpreds, vtargets = [], []
-            with torch.no_grad():
-                for batch_ids, batch_mask, batch_latent, batch_labels in tqdm(val_loader, desc=f"Val {epoch+1}"):
+                best_fold_val_mae = float('inf')
+                patience_counter = 0
+                
+                # Train this fold
+                for epoch in range(cnn_cfg['num_epochs']):
+                    fold_cnn.train()
+                    total_loss = 0
+                    preds, targets = [], []
+                    for batch_ids, batch_mask, batch_latent, batch_labels in tqdm(fold_train_loader, desc=f"Fold {fold+1} Train {epoch+1}"):
+                        batch_ids = batch_ids.to(device)
+                        batch_mask = batch_mask.to(device)
+                        batch_latent = batch_latent.to(device)
+                        batch_labels = batch_labels.to(device)
+                        
+                        if use_mixup and use_data_augmentation:
+                            batch_ids, batch_mask, batch_latent, batch_labels = apply_mixup(
+                                batch_ids, batch_mask, batch_latent, batch_labels, alpha=mixup_alpha
+                            )
+                        
+                        fold_optimizer.zero_grad()
+                        outputs = fold_cnn(batch_ids, batch_mask, batch_latent)
+                        if clamp_outputs_during_training and use_linear_output:
+                            outputs = torch.clamp(outputs, 0, 1)
+                        if torch.isnan(outputs).any():
+                            print(f"⚠️  NaN in outputs! Batch stats:")
+                            print(f"  - batch_latent has NaN: {torch.isnan(batch_latent).any()}")
+                            print(f"  - batch_ids range: [{batch_ids.min()}, {batch_ids.max()}]")
+                            raise ValueError("NaN detected in model outputs")
+                        loss = criterion(outputs, batch_labels)
+                        if torch.isnan(loss):
+                            print(f"⚠️  NaN in loss! outputs range: [{outputs.min()}, {outputs.max()}]")
+                            raise ValueError("NaN detected in loss")
+                        loss.backward()
+                        torch.nn.utils.clip_grad_norm_(fold_cnn.parameters(), max_norm=1.0)
+                        fold_optimizer.step()
+                        total_loss += loss.item()
+                        preds.extend(outputs.detach().cpu().numpy())
+                        targets.extend(batch_labels.cpu().numpy())
+                    train_mae = np.mean(np.abs(np.array(preds) - np.array(targets)))
+                    
+                    fold_cnn.eval()
+                    val_loss, val_mae = 0, 0
+                    vpreds, vtargets = [], []
+                    with torch.no_grad():
+                        for batch_ids, batch_mask, batch_latent, batch_labels in tqdm(fold_val_loader, desc=f"Fold {fold+1} Val {epoch+1}"):
+                            batch_ids = batch_ids.to(device)
+                            batch_mask = batch_mask.to(device)
+                            batch_latent = batch_latent.to(device)
+                            batch_labels = batch_labels.to(device)
+                            outputs = fold_cnn(batch_ids, batch_mask, batch_latent)
+                            if clamp_outputs_during_training and use_linear_output:
+                                outputs = torch.clamp(outputs, 0, 1)
+                            loss = criterion(outputs, batch_labels)
+                            val_loss += loss.item()
+                            vpreds.extend(outputs.cpu().numpy())
+                            vtargets.extend(batch_labels.cpu().numpy())
+                    val_loss /= len(fold_val_loader)
+                    val_mae = np.mean(np.abs(np.array(vpreds) - np.array(vtargets)))
+                    print(f"Fold {fold+1} Epoch {epoch+1}: Train Loss {total_loss/len(fold_train_loader):.4f}, MAE {train_mae:.4f} | Val Loss {val_loss:.4f}, MAE {val_mae:.4f}")
+                    mlflow.log_metrics({f'fold{fold+1}_train_loss': total_loss/len(fold_train_loader), 
+                                       f'fold{fold+1}_train_mae': train_mae, 
+                                       f'fold{fold+1}_val_loss': val_loss, 
+                                       f'fold{fold+1}_val_mae': val_mae}, step=epoch)
+                    
+                    if fold_scheduler is not None:
+                        fold_scheduler.step(val_mae)
+                    
+                    if val_mae < best_fold_val_mae:
+                        best_fold_val_mae = val_mae
+                        patience_counter = 0
+                        fold_model_path = f'models/{model_name}_fold{fold+1}_best.pth'
+                        os.makedirs('models', exist_ok=True)
+                        torch.save(fold_cnn.state_dict(), fold_model_path)
+                        print(f"✓ Fold {fold+1} best model saved! MAE: {best_fold_val_mae:.4f}")
+                    else:
+                        patience_counter += 1
+                        if patience_counter >= train_cfg['early_stopping_patience']:
+                            print(f"Early stopping triggered for fold {fold+1}!")
+                            break
+                
+                fold_val_maes.append(best_fold_val_mae)
+                fold_models.append(fold_model_path)
+                mlflow.log_metric(f'fold{fold+1}_best_val_mae', best_fold_val_mae)
+                print(f"\n✓ Fold {fold+1} complete! Best Val MAE: {best_fold_val_mae:.4f}\n")
+            
+            # K-Fold Summary
+            avg_val_mae = np.mean(fold_val_maes)
+            std_val_mae = np.std(fold_val_maes)
+            print(f"\n{'='*60}")
+            print(f"K-FOLD CROSS VALIDATION RESULTS")
+            print(f"{'='*60}")
+            for i, mae in enumerate(fold_val_maes):
+                print(f"Fold {i+1}: {mae:.4f}")
+            print(f"Average: {avg_val_mae:.4f} ± {std_val_mae:.4f}")
+            print(f"{'='*60}\n")
+            
+            mlflow.log_metric('kfold_avg_val_mae', avg_val_mae)
+            mlflow.log_metric('kfold_std_val_mae', std_val_mae)
+            
+            # Make predictions based on ensemble mode
+            if kfold_ensemble_mode == 'average':
+                ensemble_desc = "WEIGHTED AVERAGE" if kfold_weighted_ensemble else "SIMPLE AVERAGE"
+                print(f"Using {ensemble_desc} ensemble of all folds for predictions...")
+                all_fold_preds = []
+                for fold_idx, fold_model_path in enumerate(fold_models):
+                    fold_cnn = CNNModel(
+                        vocab_size=vocab_size,
+                        embedding_dim=cnn_cfg['embedding_dim'],
+                        num_filters=cnn_cfg.get('num_filters', 64),
+                        kernel_sizes=cnn_cfg.get('kernel_sizes', [3,4,5]),
+                        dropout=cnn_cfg['dropout'],
+                        latent_dim=ae_latent,
+                        use_attention_mask=use_attention_mask,
+                        use_self_attention=use_self_attention,
+                        self_attention_heads=self_attention_heads,
+                        self_attention_dropout=self_attention_dropout,
+                        use_attention_pooling=use_attention_pooling,
+                        use_linear_output=use_linear_output,
+                        activation=cnn_activation,
+                        fc_architecture=fc_architecture
+                    ).to(device)
+                    fold_cnn.load_state_dict(torch.load(fold_model_path))
+                    fold_cnn.eval()
+                    fold_preds = []
+                    with torch.no_grad():
+                        for batch_ids, batch_mask, batch_latent in tqdm(test_loader, desc=f"Predict Fold {fold_idx+1}"):
+                            batch_ids = batch_ids.to(device)
+                            batch_mask = batch_mask.to(device)
+                            batch_latent = batch_latent.to(device)
+                            outputs = fold_cnn(batch_ids, batch_mask, batch_latent)
+                            if clamp_outputs_during_training and use_linear_output:
+                                outputs = torch.clamp(outputs, 0, 1)
+                            fold_preds.extend(outputs.cpu().numpy())
+                    all_fold_preds.append(np.array(fold_preds))
+                
+                # Calculate predictions: weighted or simple average
+                if kfold_weighted_ensemble:
+                    # Weighted average: use inverse of MAE as weight (lower MAE = higher weight)
+                    # Add small epsilon to avoid division by zero
+                    weights = 1.0 / (np.array(fold_val_maes) + 1e-8)
+                    weights = weights / weights.sum()  # Normalize to sum to 1
+                    print(f"\nFold weights (based on val MAE):")
+                    for i, (mae, w) in enumerate(zip(fold_val_maes, weights)):
+                        print(f"  Fold {i+1}: MAE={mae:.4f}, Weight={w:.4f}")
+                    mlflow.log_params({f'fold{i+1}_weight': float(w) for i, w in enumerate(weights)})
+                    # Weighted sum
+                    preds = np.zeros_like(all_fold_preds[0])
+                    for fold_pred, weight in zip(all_fold_preds, weights):
+                        preds += fold_pred * weight
+                else:
+                    # Simple average
+                    preds = np.mean(all_fold_preds, axis=0)
+                best_val_mae = avg_val_mae
+            else:  # 'best' mode
+                best_fold_idx = np.argmin(fold_val_maes)
+                best_fold_model_path = fold_models[best_fold_idx]
+                print(f"Using BEST fold ({best_fold_idx+1}) with MAE {fold_val_maes[best_fold_idx]:.4f} for predictions...")
+                cnn.load_state_dict(torch.load(best_fold_model_path))
+                cnn.eval()
+                preds = []
+                with torch.no_grad():
+                    for batch_ids, batch_mask, batch_latent in tqdm(test_loader, desc="Predict"):
+                        batch_ids = batch_ids.to(device)
+                        batch_mask = batch_mask.to(device)
+                        batch_latent = batch_latent.to(device)
+                        outputs = cnn(batch_ids, batch_mask, batch_latent)
+                        if clamp_outputs_during_training and use_linear_output:
+                            outputs = torch.clamp(outputs, 0, 1)
+                        preds.extend(outputs.cpu().numpy())
+                preds = np.array(preds)
+                best_val_mae = fold_val_maes[best_fold_idx]
+                # Save best fold model as final model
+                torch.save(cnn.state_dict(), f'models/{model_name}_best.pth')
+            
+            # Log all fold models
+            for fold_model_path in fold_models:
+                mlflow.log_artifact(fold_model_path)
+        
+        else:
+            # STANDARD TRAINING (no K-Fold)
+            if use_adamw:
+                print(f"Optimizer: AdamW (weight_decay={weight_decay})")
+                optimizer = torch.optim.AdamW(cnn.parameters(), lr=cnn_cfg['learning_rate'], weight_decay=weight_decay)
+            else:
+                print(f"Optimizer: Adam")
+                optimizer = torch.optim.Adam(cnn.parameters(), lr=cnn_cfg['learning_rate'])
+            scheduler = None
+            if train_cfg.get('use_scheduler', False):
+                scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                    optimizer, mode='min',
+                    factor=train_cfg.get('scheduler_factor', 0.5),
+                    patience=train_cfg.get('scheduler_patience', 5),
+                    verbose=True
+                )
+            
+            train_dataset = CNNWithLatentDataset(X_train_ids, X_train_mask, train_latent, y_train, use_attention=use_attention_mask, use_self_attention=use_self_attention, augmentation=augmentation, is_train=True)
+            val_dataset = CNNWithLatentDataset(X_val_ids, X_val_mask, val_latent, y_val, use_attention=use_attention_mask, use_self_attention=use_self_attention, augmentation=None, is_train=False)
+            train_loader = DataLoader(train_dataset, batch_size=cnn_cfg['batch_size'], shuffle=True)
+            val_loader = DataLoader(val_dataset, batch_size=cnn_cfg['batch_size'])
+            
+            best_val_mae = float('inf')
+            patience_counter = 0
+            for epoch in range(cnn_cfg['num_epochs']):
+                cnn.train()
+                total_loss = 0
+                preds, targets = [], []
+                for batch_ids, batch_mask, batch_latent, batch_labels in tqdm(train_loader, desc=f"Train {epoch+1}"):
                     batch_ids = batch_ids.to(device)
                     batch_mask = batch_mask.to(device)
                     batch_latent = batch_latent.to(device)
                     batch_labels = batch_labels.to(device)
+                    
+                    # Apply mixup augmentation if enabled
+                    if use_mixup and use_data_augmentation:
+                        batch_ids, batch_mask, batch_latent, batch_labels = apply_mixup(
+                            batch_ids, batch_mask, batch_latent, batch_labels, alpha=mixup_alpha
+                        )
+                    
+                    optimizer.zero_grad()
                     outputs = cnn(batch_ids, batch_mask, batch_latent)
-                    # Clamp during validation if enabled and using linear output
+                    # Clamp outputs to [0,1] during training if enabled and using linear output
                     if clamp_outputs_during_training and use_linear_output:
                         outputs = torch.clamp(outputs, 0, 1)
+                    # Check for NaN in outputs
+                    if torch.isnan(outputs).any():
+                        print(f"⚠️  NaN in outputs! Batch stats:")
+                        print(f"  - batch_latent has NaN: {torch.isnan(batch_latent).any()}")
+                        print(f"  - batch_ids range: [{batch_ids.min()}, {batch_ids.max()}]")
+                        raise ValueError("NaN detected in model outputs")
                     loss = criterion(outputs, batch_labels)
-                    val_loss += loss.item()
-                    vpreds.extend(outputs.cpu().numpy())
-                    vtargets.extend(batch_labels.cpu().numpy())
-            val_loss /= len(val_loader)
-            val_mae = np.mean(np.abs(np.array(vpreds) - np.array(vtargets)))
-            print(f"Epoch {epoch+1}: Train Loss {total_loss/len(train_loader):.4f}, MAE {train_mae:.4f} | Val Loss {val_loss:.4f}, MAE {val_mae:.4f}")
-            mlflow.log_metrics({'train_loss': total_loss/len(train_loader), 'train_mae': train_mae, 'val_loss': val_loss, 'val_mae': val_mae}, step=epoch)
-            if scheduler is not None:
-                scheduler.step(val_mae)
-            if val_mae < best_val_mae:
-                best_val_mae = val_mae
-                patience_counter = 0
-                model_path = f'models/{model_name}_best.pth'
-                os.makedirs('models', exist_ok=True)
-                torch.save(cnn.state_dict(), model_path)
-                mlflow.log_artifact(model_path)
-                print(f"✓ Best model saved! MAE: {best_val_mae:.4f}")
-            else:
-                patience_counter += 1
-                if patience_counter >= train_cfg['early_stopping_patience']:
-                    print("\nEarly stopping triggered!")
-                    break
-        # Predict
-        cnn.load_state_dict(torch.load(f'models/{model_name}_best.pth'))
-        cnn.eval()
-        preds = []
-        with torch.no_grad():
-            for batch_ids, batch_mask, batch_latent in tqdm(test_loader, desc="Predict"):
-                batch_ids = batch_ids.to(device)
-                batch_mask = batch_mask.to(device)
-                batch_latent = batch_latent.to(device)
-                outputs = cnn(batch_ids, batch_mask, batch_latent)
-                # Clamp only if enabled and using linear output (sigmoid already in [0,1])
-                if clamp_outputs_during_training and use_linear_output:
-                    outputs = torch.clamp(outputs, 0, 1)
-                preds.extend(outputs.cpu().numpy())
-        preds = np.array(preds)
+                    if torch.isnan(loss):
+                        print(f"⚠️  NaN in loss! outputs range: [{outputs.min()}, {outputs.max()}]")
+                        raise ValueError("NaN detected in loss")
+                    loss.backward()
+                    # Gradient clipping to prevent NaN
+                    torch.nn.utils.clip_grad_norm_(cnn.parameters(), max_norm=1.0)
+                    optimizer.step()
+                    total_loss += loss.item()
+                    preds.extend(outputs.detach().cpu().numpy())
+                    targets.extend(batch_labels.cpu().numpy())
+                train_mae = np.mean(np.abs(np.array(preds) - np.array(targets)))
+                cnn.eval()
+                val_loss, val_mae = 0, 0
+                vpreds, vtargets = [], []
+                with torch.no_grad():
+                    for batch_ids, batch_mask, batch_latent, batch_labels in tqdm(val_loader, desc=f"Val {epoch+1}"):
+                        batch_ids = batch_ids.to(device)
+                        batch_mask = batch_mask.to(device)
+                        batch_latent = batch_latent.to(device)
+                        batch_labels = batch_labels.to(device)
+                        outputs = cnn(batch_ids, batch_mask, batch_latent)
+                        # Clamp during validation if enabled and using linear output
+                        if clamp_outputs_during_training and use_linear_output:
+                            outputs = torch.clamp(outputs, 0, 1)
+                        loss = criterion(outputs, batch_labels)
+                        val_loss += loss.item()
+                        vpreds.extend(outputs.cpu().numpy())
+                        vtargets.extend(batch_labels.cpu().numpy())
+                val_loss /= len(val_loader)
+                val_mae = np.mean(np.abs(np.array(vpreds) - np.array(vtargets)))
+                print(f"Epoch {epoch+1}: Train Loss {total_loss/len(train_loader):.4f}, MAE {train_mae:.4f} | Val Loss {val_loss:.4f}, MAE {val_mae:.4f}")
+                mlflow.log_metrics({'train_loss': total_loss/len(train_loader), 'train_mae': train_mae, 'val_loss': val_loss, 'val_mae': val_mae}, step=epoch)
+                if scheduler is not None:
+                    scheduler.step(val_mae)
+                if val_mae < best_val_mae:
+                    best_val_mae = val_mae
+                    patience_counter = 0
+                    model_path = f'models/{model_name}_best.pth'
+                    os.makedirs('models', exist_ok=True)
+                    torch.save(cnn.state_dict(), model_path)
+                    mlflow.log_artifact(model_path)
+                    print(f"✓ Best model saved! MAE: {best_val_mae:.4f}")
+                else:
+                    patience_counter += 1
+                    if patience_counter >= train_cfg['early_stopping_patience']:
+                        print("\nEarly stopping triggered!")
+                        break
+            # Predict
+            cnn.load_state_dict(torch.load(f'models/{model_name}_best.pth'))
+            cnn.eval()
+            preds = []
+            with torch.no_grad():
+                for batch_ids, batch_mask, batch_latent in tqdm(test_loader, desc="Predict"):
+                    batch_ids = batch_ids.to(device)
+                    batch_mask = batch_mask.to(device)
+                    batch_latent = batch_latent.to(device)
+                    outputs = cnn(batch_ids, batch_mask, batch_latent)
+                    # Clamp only if enabled and using linear output (sigmoid already in [0,1])
+                    if clamp_outputs_during_training and use_linear_output:
+                        outputs = torch.clamp(outputs, 0, 1)
+                    preds.extend(outputs.cpu().numpy())
+            preds = np.array(preds)
+        
+        # Save predictions (common for both K-Fold and standard training)
         output_dir = Path("data/output")
         output_dir.mkdir(parents=True, exist_ok=True)
         output_df = pd.DataFrame({'example_id': test_ids, 'label': preds})

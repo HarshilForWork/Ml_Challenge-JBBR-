@@ -12,7 +12,7 @@ training:
   validation_split: 0.2
   seed: 42
   loss_function: "L1Loss"
-  use_scheduler: false
+  use_scheduler: true
   early_stopping_patience: 10
   
 # MLflow Configuration
@@ -75,9 +75,9 @@ models:
     embedding_dim: 128
     max_seq_length: 512
     hidden_dim: 96
-    num_layers: 2
+    num_layers: 3
     num_filters: 48   
-    kernel_sizes: [3, 4, 5, 6, 7]
+    kernel_sizes: [3,4,5,6,7]
     dropout: 0.3
     batch_size: 128
     learning_rate: 0.0003
@@ -96,6 +96,15 @@ models:
     ae_compression_mode: "compress"
     ae_epochs: 30
     ae_lr: 0.001
+    ae_activation: "relu"  # relu, gelu, silu, tanh
+    cnn_activation: "gelu"  # relu, gelu, silu, tanh
+    # FC Architecture Options: original, wide, extra_wide, custom
+    fc_architecture: "wide"  # original: 240→128→64→1, wide: 240→256→128→64→1, extra_wide: 240→512→256→128→1, custom: 240→324→192→96→1
+    # K-Fold Cross Validation (for CNN training only, not AE)
+    use_kfold: true  # Enable K-Fold cross-validation
+    kfold_splits: 5  # Number of folds (e.g., 5 for 5-fold CV)
+    kfold_ensemble_mode: "average"  # "best" (use best fold model) or "average" (average predictions from all folds)
+    kfold_weighted_ensemble: true  # If true, uses weighted average (based on val MAE). Only applies when ensemble_mode="average"
     prevent_overfitting: true
     ae_early_stopping: true
     ae_early_stopping_patience: 8
