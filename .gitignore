@@ -13,16 +13,20 @@ env/
 aws_iam_key.json
 
 # MLflow
-mlruns/
+/mlruns/*
+!/mlruns/.gitkeep
 mlartifacts/
 
 # Model outputs
-models/
+/models/*
+!/models/.gitkeep
 *.pth
 
 # Data (tracked by DVC)
-/Raw_data
-/input_data
+/Raw_data/*
+!/Raw_data/.gitkeep
+/input_data/*
+!/input_data/.gitkeep
 
 # DVC
 .dvc/cache
@@ -30,6 +34,9 @@ models/
 
 # OS
 .DS_Store
-/graphs
-/models
-/catboost_info
+/graphs/*
+!/graphs/.gitkeep
+/models/*
+!/models/.gitkeep
+/catboost_info/*
+!/catboost_info/.gitkeep
